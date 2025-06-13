@@ -1,0 +1,21 @@
+# Core dependencies
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+openai>=1.0.0  # LM Studio API compatibility
+click>=8.1.0   # CLI framework
+
+# Database
+sqlite3  # Built-in Python module
+
+# Development dependencies
+pytest>=7.4.0
+pytest-mock>=3.11.0
+ruff>=0.1.0    # Linter and formatter
+
+# Optional dependencies for enhanced scraping
+selenium>=4.15.0  # For JavaScript-heavy pages
+fake-useragent>=1.4.0  # Random User-Agent rotation
+
+# Logging and utilities
+colorama>=0.4.6  # Cross-platform colored terminal text
+tqdm>=4.66.0     # Progress bars

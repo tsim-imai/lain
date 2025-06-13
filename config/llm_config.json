@@ -1,0 +1,15 @@
+{
+  "lm_studio": {
+    "base_url": "http://localhost:1234/v1",
+    "api_key": "not-needed",
+    "model_name": "auto",
+    "max_tokens": 2048,
+    "temperature": 0.7,
+    "timeout": 30
+  },
+  "prompts": {
+    "search_decision": "以下の質問について、Web検索が必要かどうかを判断してください。\n検索が必要な場合は「YES」、不要な場合は「NO」で答えてください。\n\n質問: {query}",
+    "query_generation": "以下の質問に対して、最適な検索クエリを生成してください。\n日本語で簡潔に、検索に適したキーワードを返してください。\n\n質問: {query}",
+    "result_summary": "以下の検索結果を元に、ユーザーの質問に対する回答を作成してください。\n\n質問: {query}\n\n検索結果:\n{search_results}\n\n回答:"
+  }
+}

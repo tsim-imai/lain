@@ -1,0 +1,38 @@
+{
+  "bing": {
+    "base_url": "https://www.bing.com/search",
+    "user_agents": [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ],
+    "headers": {
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Connection": "keep-alive",
+      "Upgrade-Insecure-Requests": "1"
+    },
+    "rate_limit": {
+      "requests_per_second": 1,
+      "retry_attempts": 3,
+      "retry_delay": 2
+    },
+    "selectors": {
+      "result_item": "li.b_algo",
+      "title": "h2 a",
+      "url": "h2 a", 
+      "snippet": ".b_caption p",
+      "fallback_selectors": {
+        "result_item_alt": "[data-priority]",
+        "title_alt": "a[href^='http']:not([href*='bing.com'])",
+        "external_links": "a[href^='http']:not([href*='bing.com']):not([href*='microsoft.com'])"
+      }
+    }
+  },
+  "cache": {
+    "ttl_hours": 24,
+    "max_results": 10,
+    "database_path": "data/cache.db"
+  }
+}
