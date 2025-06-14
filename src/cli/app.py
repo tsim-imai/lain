@@ -10,6 +10,7 @@ from ..scraper.services import ScraperService
 from ..cache.services import CacheService
 from ..utils.config import ConfigManager
 from ..utils.exceptions import LainError
+from ..utils.colors import ColorPrinter, success, error, warning, info, highlight, progress_color
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +18,16 @@ logger = logging.getLogger(__name__)
 class LainApp:
     """メインアプリケーションクラス"""
     
-    def __init__(self, config_manager: ConfigManager):
+    def __init__(self, config_manager: ConfigManager, enable_color: bool = True):
         """
         初期化
         
         Args:
             config_manager: 設定管理インスタンス
+            enable_color: カラー出力を有効にするか
         """
         self.config_manager = config_manager
+        self.color_printer = ColorPrinter(enable_color)
         
         # 各サービスを初期化
         self.llm_service = LLMService(config_manager)
@@ -57,11 +60,27 @@ class LainApp:
         try:
             # 進捗バーの初期化
             if show_progress:
-                progress = tqdm(total=4, desc="処理中", unit="step")
+                if self.color_printer.color_enabled:
+                    progress = tqdm(
+                        total=4, 
+                        desc="🔄 処理中", 
+                        unit="step",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
+                        colour='cyan',
+                        leave=False  # 完了後にプログレスバーを消去
+                    )
+                else:
+                    progress = tqdm(
+                        total=4, 
+                        desc="🔄 処理中", 
+                        unit="step",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
+                        leave=False  # 完了後にプログレスバーを消去
+                    )
             
             # ステップ1: 検索判断
             if show_progress:
-                progress.set_description("検索の必要性を判断中")
+                progress.set_description("🤔 検索の必要性を判断中")
                 progress.update(1)
             
             should_search = self.llm_service.should_search(query)
@@ -70,7 +89,7 @@ class LainApp:
             if not should_search:
                 # ステップ2-4をスキップして直接回答
                 if show_progress:
-                    progress.set_description("AIが直接回答中")
+                    progress.set_description("🤖 AIが直接回答中")
                     progress.update(3)
                 
                 response = self.llm_service.direct_answer(query)
@@ -88,7 +107,7 @@ class LainApp:
             
             # ステップ2: 検索クエリ生成
             if show_progress:
-                progress.set_description("検索クエリを生成中")
+                progress.set_description("📝 検索クエリを生成中")
                 progress.update(1)
             
             search_query = self.llm_service.generate_search_query(query)
@@ -96,7 +115,7 @@ class LainApp:
             
             # ステップ3: Web検索（キャッシュ付き）
             if show_progress:
-                progress.set_description("Web検索を実行中")
+                progress.set_description("🌐 Web検索を実行中")
                 progress.update(1)
             
             search_results = self.cache_service.get_or_cache_results(
@@ -109,7 +128,7 @@ class LainApp:
             
             # ステップ4: 結果要約
             if show_progress:
-                progress.set_description("検索結果を要約中")
+                progress.set_description("📊 検索結果を要約中")
                 progress.update(1)
             
             if search_results:
@@ -158,6 +177,52 @@ class LainApp:
                     "processing_time": time.time() - start_time,
                     "search_results": []
                 }
+    
+    def search(self, query: str, show_progress: bool = True, **kwargs) -> str:
+        """
+        カラー出力対応の検索実行
+        
+        Args:
+            query: 検索クエリ
+            show_progress: プログレス表示
+            **kwargs: process_queryへの追加引数
+            
+        Returns:
+            検索結果テキスト
+        """
+        try:
+            # ヘッダー表示
+            self.color_printer.print_header(f"lain検索: {query}")
+            
+            # 処理実行
+            result = self.process_query(query, show_progress=show_progress, **kwargs)
+            
+            # 結果表示
+            if result.get("search_performed"):
+                self.color_printer.print_info(f"検索実行: {len(result.get('search_results', []))}件の結果を取得")
+                if result.get("from_cache"):
+                    self.color_printer.print_info("キャッシュから取得")
+            else:
+                self.color_printer.print_info("検索をスキップして直接回答")
+            
+            # 処理時間表示
+            processing_time = result.get("processing_time", 0)
+            self.color_printer.print_info(f"処理時間: {processing_time:.2f}秒")
+            
+            # エラーがある場合
+            if "error" in result:
+                self.color_printer.print_warning("処理中に問題が発生しました")
+            
+            # 回答表示
+            print()  # 空行
+            print(highlight("🤖 AI回答:"))
+            print(result["response"])
+            
+            return result["response"]
+            
+        except Exception as e:
+            self.color_printer.print_error(f"検索エラー: {str(e)}")
+            return f"エラーが発生しました: {str(e)}"
     
     def test_llm_connection(self) -> bool:
         """

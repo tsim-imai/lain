@@ -37,6 +37,18 @@ pip install -r requirements.txt
 3. LM Studioを起動し、32B以下のモデルをロード
    - 接続先: `http://localhost:1234/v1`
 
+4. テスト実行（オプション）
+```bash
+# 全テスト実行
+pytest tests/
+
+# 特定モジュールのテスト
+pytest tests/test_llm_services_simple.py
+
+# 静かな出力
+pytest tests/ -q
+```
+
 ## 使用方法
 
 ### 基本的な検索

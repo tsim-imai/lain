@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 from ..utils.config import ConfigManager
 from ..utils.exceptions import ConfigError
+from ..utils.colors import ColorPrinter, success, error, warning, info, highlight
 from .app import LainApp
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,9 @@ logger = logging.getLogger(__name__)
 @click.option('--config-dir', type=click.Path(exists=True), help='設定ファイルディレクトリのパス')
 @click.option('--verbose', '-v', is_flag=True, help='詳細ログを有効化')
 @click.option('--debug', is_flag=True, help='デバッグモードを有効化')
+@click.option('--no-color', is_flag=True, help='カラー出力を無効化')
 @click.pass_context
-def cli(ctx, config_dir: Optional[str], verbose: bool, debug: bool):
+def cli(ctx, config_dir: Optional[str], verbose: bool, debug: bool, no_color: bool):
     """
     lain - ローカルLLMを使用したWeb検索・要約システム
     """
@@ -48,6 +50,8 @@ def cli(ctx, config_dir: Optional[str], verbose: bool, debug: bool):
         ctx.obj['config_manager'] = config_manager
         ctx.obj['verbose'] = verbose
         ctx.obj['debug'] = debug
+        ctx.obj['enable_color'] = not no_color
+        ctx.obj['color_printer'] = ColorPrinter(not no_color)
         
     except ConfigError as e:
         click.echo(f"設定エラー: {str(e)}", err=True)
@@ -71,24 +75,33 @@ def search(ctx, query: str, no_cache: bool, max_results: int, output_format: str
     """
     try:
         config_manager = ctx.obj['config_manager']
-        app = LainApp(config_manager)
+        enable_color = ctx.obj['enable_color']
+        color_printer = ctx.obj['color_printer']
         
-        # 検索を実行
-        result = app.process_query(
-            query=query,
-            force_refresh=no_cache,
-            max_results=max_results
-        )
+        app = LainApp(config_manager, enable_color=enable_color)
         
-        # 結果を出力
+        # JSON出力の場合はカラー出力を無効化
         if output_format == 'json':
+            result = app.process_query(
+                query=query,
+                force_refresh=no_cache,
+                max_results=max_results
+            )
             import json
             click.echo(json.dumps(result, ensure_ascii=False, indent=2))
         else:
-            click.echo(result['response'])
+            # カラー出力対応の検索実行
+            app.search(
+                query=query,
+                force_refresh=no_cache,
+                max_results=max_results
+            )
             
     except Exception as e:
-        click.echo(f"検索エラー: {str(e)}", err=True)
+        if ctx.obj['enable_color']:
+            click.echo(error(f"検索エラー: {str(e)}"), err=True)
+        else:
+            click.echo(f"❌ 検索エラー: {str(e)}", err=True)
         sys.exit(1)
 
 
@@ -100,36 +113,42 @@ def test(ctx):
     """
     try:
         config_manager = ctx.obj['config_manager']
-        app = LainApp(config_manager)
+        enable_color = ctx.obj['enable_color']
+        color_printer = ctx.obj['color_printer']
         
-        click.echo("システム接続テストを開始...")
+        app = LainApp(config_manager, enable_color=enable_color)
+        
+        color_printer.print_header("システム接続テスト")
         
         # LLM接続テスト
-        click.echo("LM Studio接続テスト...", nl=False)
+        color_printer.print_progress("LM Studio接続テスト中...")
         if app.test_llm_connection():
-            click.echo(" ✓ 成功")
+            color_printer.print_success("LM Studio接続テスト成功")
         else:
-            click.echo(" ✗ 失敗")
+            color_printer.print_error("LM Studio接続テスト失敗")
         
         # スクレイパー接続テスト
-        click.echo("Webスクレイパー接続テスト...", nl=False)
+        color_printer.print_progress("Webスクレイパー接続テスト中...")
         if app.test_scraper_connection():
-            click.echo(" ✓ 成功")
+            color_printer.print_success("Webスクレイパー接続テスト成功")
         else:
-            click.echo(" ✗ 失敗")
+            color_printer.print_error("Webスクレイパー接続テスト失敗")
         
         # キャッシュシステムテスト
-        click.echo("キャッシュシステムテスト...", nl=False)
+        color_printer.print_progress("キャッシュシステムテスト中...")
         cache_health = app.test_cache_system()
         if cache_health['status'] == 'healthy':
-            click.echo(" ✓ 成功")
+            color_printer.print_success("キャッシュシステムテスト成功")
         else:
-            click.echo(" ✗ 失敗")
+            color_printer.print_error("キャッシュシステムテスト失敗")
         
-        click.echo("テスト完了")
+        color_printer.print_info("全テスト完了")
         
     except Exception as e:
-        click.echo(f"テストエラー: {str(e)}", err=True)
+        if ctx.obj['enable_color']:
+            click.echo(error(f"テストエラー: {str(e)}"), err=True)
+        else:
+            click.echo(f"❌ テストエラー: {str(e)}", err=True)
         sys.exit(1)
 
 
