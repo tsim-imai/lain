@@ -5,7 +5,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-# concurrent.futures を削除（シーケンシャル処理に変更）
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 from ..utils.config import ConfigManager
@@ -47,14 +47,6 @@ class PoliticalScraperService:
             "political_scandal": self._search_scandal_info,
             "coalition_analysis": self._search_coalition_info,
             "general_political": self._search_general_political
-        }
-        
-        # bot認定回避のための間隔設定
-        self.human_like_delays = {
-            "between_sources": 3.0,      # ソース間の待機時間
-            "between_requests": 2.0,     # リクエスト間の待機時間
-            "after_error": 5.0,          # エラー後の待機時間
-            "random_variance": 1.0       # ランダム要素
         }
         
         logger.info("政治専門スクレイピングサービスを初期化")
@@ -360,20 +352,26 @@ class PoliticalScraperService:
         political_updates = {}
         
         try:
-            # シーケンシャル処理で複数ソースからデータ取得（bot認定回避）
-            logger.info("政治データを順次取得開始（bot認定回避のため）")
-            
-            # 政府データ取得
-            logger.info("政府データ取得中...")
-            political_updates["government"] = self.government_scraper.get_comprehensive_government_data(3)
-            time.sleep(3.0)  # 政府データ取得後に一息
-            
-            # 主要政党データ取得（順次実行）
-            major_parties = ["自由民主党", "立憲民主党", "日本維新の会"]
-            for party in major_parties:
-                logger.info(f"{party}データ取得中...")
-                political_updates[f"party_{party}"] = self.party_scraper.get_comprehensive_party_data(party, 2)
-                time.sleep(2.0)  # 各政党データ取得後に待機
+            # 並行処理で複数ソースからデータ取得
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # 政府データ取得タスク
+                gov_future = executor.submit(
+                    self.government_scraper.get_comprehensive_government_data, 3
+                )
+                
+                # 主要政党データ取得タスク
+                party_futures = {}
+                major_parties = ["自由民主党", "立憲民主党", "日本維新の会"]
+                for party in major_parties:
+                    party_futures[party] = executor.submit(
+                        self.party_scraper.get_comprehensive_party_data, party, 2
+                    )
+                
+                # 結果収集
+                political_updates["government"] = gov_future.result()
+                
+                for party, future in party_futures.items():
+                    political_updates[f"party_{party}"] = future.result()
             
             # 統計情報
             total_items = 0
@@ -465,66 +463,76 @@ class PoliticalScraperService:
         try:
             comprehensive_data = {}
             
-            # シーケンシャル処理で各ソースから取得（bot認定回避）
-            logger.info(f"包括的政治データ検索開始: '{query}'（順次処理）")
-            
-            # 1. 検索エンジン結果
-            logger.info("検索エンジン結果取得中...")
-            try:
-                comprehensive_data["search_results"] = self.political_search_engine.search_political_content(
+            # 並行処理で各ソースから取得
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                # 検索エンジン結果
+                search_future = executor.submit(
+                    self.political_search_engine.search_political_content,
                     query, "general_political", max_results // 4
                 )
-            except Exception as e:
-                logger.warning(f"検索結果取得エラー: {str(e)}")
-                comprehensive_data["search_results"] = []
-            time.sleep(2.0)
-            
-            # 2. 政府データ
-            logger.info("政府データ取得中...")
-            try:
-                comprehensive_data["government_data"] = self.government_scraper.get_comprehensive_government_data(3)
-            except Exception as e:
-                logger.warning(f"政府データ取得エラー: {str(e)}")
-                comprehensive_data["government_data"] = {}
-            time.sleep(3.0)
-            
-            # 3. 政党データ（主要政党）
-            logger.info("政党データ取得中...")
-            try:
-                comprehensive_data["party_data"] = self.party_scraper.get_all_party_news(2)
-            except Exception as e:
-                logger.warning(f"政党データ取得エラー: {str(e)}")
-                comprehensive_data["party_data"] = {}
-            time.sleep(2.0)
-            
-            # 4. メディアデータ
-            logger.info("メディアデータ取得中...")
-            try:
-                comprehensive_data["media_data"] = self.media_scraper.scrape_political_headlines(3)
-            except Exception as e:
-                logger.warning(f"メディアデータ取得エラー: {str(e)}")
-                comprehensive_data["media_data"] = {}
-            time.sleep(2.0)
-            
-            # 5. SNSデータ
-            logger.info("SNSデータ取得中...")
-            try:
-                comprehensive_data["social_data"] = self.social_scraper.monitor_political_twitter(max_results // 4)
-            except Exception as e:
-                logger.warning(f"SNSデータ取得エラー: {str(e)}")
-                comprehensive_data["social_data"] = []
-            time.sleep(2.0)
-            
-            # 6. 政府専用検索
-            logger.info("政府専用検索実行中...")
-            try:
-                comprehensive_data["government_search"] = self.political_search_engine.search_government_sources(
+                
+                # 政府データ
+                gov_future = executor.submit(
+                    self.government_scraper.get_comprehensive_government_data, 3
+                )
+                
+                # 政党データ（主要政党）
+                party_future = executor.submit(
+                    self.party_scraper.get_all_party_news, 2
+                )
+                
+                # メディアデータ
+                media_future = executor.submit(
+                    self.media_scraper.scrape_political_headlines, 3
+                )
+                
+                # SNSデータ
+                social_future = executor.submit(
+                    self.social_scraper.monitor_political_twitter, max_results // 4
+                )
+                
+                # 政府専用検索
+                gov_search_future = executor.submit(
+                    self.political_search_engine.search_government_sources,
                     query, max_results // 4
                 )
-            except Exception as e:
-                logger.warning(f"政府検索結果取得エラー: {str(e)}")
-                comprehensive_data["government_search"] = []
-            time.sleep(1.0)
+                
+                # 結果収集
+                try:
+                    comprehensive_data["search_results"] = search_future.result()
+                except Exception as e:
+                    logger.warning(f"検索結果取得エラー: {str(e)}")
+                    comprehensive_data["search_results"] = []
+                
+                try:
+                    comprehensive_data["government_data"] = gov_future.result()
+                except Exception as e:
+                    logger.warning(f"政府データ取得エラー: {str(e)}")
+                    comprehensive_data["government_data"] = {}
+                
+                try:
+                    comprehensive_data["party_data"] = party_future.result()
+                except Exception as e:
+                    logger.warning(f"政党データ取得エラー: {str(e)}")
+                    comprehensive_data["party_data"] = {}
+                
+                try:
+                    comprehensive_data["media_data"] = media_future.result()
+                except Exception as e:
+                    logger.warning(f"メディアデータ取得エラー: {str(e)}")
+                    comprehensive_data["media_data"] = {}
+                
+                try:
+                    comprehensive_data["social_data"] = social_future.result()
+                except Exception as e:
+                    logger.warning(f"SNSデータ取得エラー: {str(e)}")
+                    comprehensive_data["social_data"] = []
+                
+                try:
+                    comprehensive_data["government_search"] = gov_search_future.result()
+                except Exception as e:
+                    logger.warning(f"政府検索結果取得エラー: {str(e)}")
+                    comprehensive_data["government_search"] = []
             
             # 統計情報
             total_items = 0

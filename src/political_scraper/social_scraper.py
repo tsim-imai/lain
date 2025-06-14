@@ -12,7 +12,6 @@ import json
 
 from ..utils.config import ConfigManager
 from ..utils.exceptions import ScraperError
-from ..political_data.political_database import PoliticalDatabaseManager, SocialPost
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,6 @@ class SocialScraper:
         """
         self.config_manager = config_manager
         self.session = requests.Session()
-        self.database = PoliticalDatabaseManager(config_manager)
         
         # ユーザーエージェント設定
         self.session.headers.update({
@@ -203,9 +201,6 @@ class SocialScraper:
                 "scraped_at": datetime.now().isoformat()
             }
             sample_tweets.append(tweet_data)
-            
-            # データベースに保存
-            self._save_post_to_db(tweet_data)
         
         return sample_tweets
     
@@ -265,9 +260,6 @@ class SocialScraper:
                     "scraped_at": datetime.now().isoformat()
                 }
                 hashtag_tweets.append(tweet_data)
-                
-                # データベースに保存
-                self._save_post_to_db(tweet_data)
             
             return hashtag_tweets
             
@@ -573,99 +565,3 @@ class SocialScraper:
                 "negative": negative_count
             }
         }
-    
-    def _save_post_to_db(self, post_data: Dict[str, Any]) -> Optional[int]:
-        """
-        SNS投稿をデータベースに保存
-        
-        Args:
-            post_data: SNS投稿データ
-            
-        Returns:
-            保存された投稿のID（重複の場合はNone）
-        """
-        try:
-            # アカウントタイプを判定
-            account_type = "general"
-            if post_data.get("politician"):
-                account_type = "politician"
-            elif "解説" in post_data.get("category", "") or "ジャーナリスト" in post_data.get("account", ""):
-                account_type = "influencer"
-            
-            social_post = SocialPost(
-                id=None,
-                platform=post_data.get("platform", "Twitter"),
-                account_name=post_data.get("account", ""),
-                account_type=account_type,
-                content=post_data.get("content", ""),
-                posted_at=post_data.get("posted_at", ""),
-                collected_at=datetime.now().isoformat(),
-                engagement_data=post_data.get("engagement", {}),
-                sentiment_score=post_data.get("sentiment_score", 0.0),
-                reliability_score=post_data.get("reliability_score", 0.5),
-                hashtags=post_data.get("hashtag", ""),
-                mentioned_entities={
-                    "politicians": [post_data.get("politician")] if post_data.get("politician") else [],
-                    "parties": [post_data.get("party")] if post_data.get("party") else []
-                },
-                political_topics=post_data.get("political_topics", [])
-            )
-            
-            saved_id = self.database.save_social_post(social_post)
-            if saved_id:
-                logger.debug(f"SNS投稿をDB保存: {post_data.get('account', 'Unknown')} (ID: {saved_id})")
-            
-            return saved_id
-            
-        except Exception as e:
-            logger.error(f"SNS投稿DB保存エラー: {str(e)}")
-            return None
-    
-    def get_cached_posts(self, 
-                        platform: Optional[str] = None,
-                        account_type: Optional[str] = None,
-                        hours: int = 24) -> List[Dict[str, Any]]:
-        """
-        キャッシュされたSNS投稿を取得
-        
-        Args:
-            platform: プラットフォーム
-            account_type: アカウントタイプ
-            hours: 取得対象時間
-            
-        Returns:
-            キャッシュされたSNS投稿のリスト
-        """
-        try:
-            cached_posts = self.database.get_latest_social_posts(
-                platform=platform,
-                account_type=account_type,
-                days_back=hours // 24 + 1,
-                limit=50
-            )
-            
-            # 投稿形式に変換
-            posts = []
-            for post in cached_posts:
-                post_data = {
-                    "platform": post.platform,
-                    "account": post.account_name,
-                    "account_type": post.account_type,
-                    "content": post.content,
-                    "posted_at": post.posted_at,
-                    "engagement": post.engagement_data,
-                    "sentiment_score": post.sentiment_score,
-                    "reliability_score": post.reliability_score,
-                    "hashtags": post.hashtags,
-                    "political_topics": post.political_topics,
-                    "cached": True,
-                    "scraped_at": post.collected_at
-                }
-                posts.append(post_data)
-            
-            logger.info(f"キャッシュからSNS投稿を取得: {len(posts)}件")
-            return posts
-            
-        except Exception as e:
-            logger.error(f"キャッシュSNS投稿取得エラー: {str(e)}")
-            return []
