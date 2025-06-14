@@ -3,10 +3,11 @@
 既存検索エンジンに政治専門の検索戦略・フィルタリング・ランキングを追加
 """
 import logging
+import time
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# concurrent.futures を削除（シーケンシャル処理に変更）
 
 from ..scraper.services import ScraperService
 from ..utils.config import ConfigManager
@@ -149,26 +150,26 @@ class PoliticalSearchEngine:
             # 政治意図に基づくクエリ拡張
             enhanced_queries = self._enhance_query_for_political_intent(query, political_intent)
             
-            # 複数クエリで並行検索
+            # 複数クエリでシーケンシャル検索（bot認定回避）
             all_results = []
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                future_to_query = {}
-                
-                for enhanced_query in enhanced_queries[:3]:  # 最大3つのクエリ
-                    future = executor.submit(
-                        self._search_with_political_filtering,
+            enhanced_query_list = enhanced_queries[:3]  # 最大3つのクエリ
+            logger.info(f"拡張クエリで順次検索: {len(enhanced_query_list)}個のクエリ")
+            
+            for i, enhanced_query in enumerate(enhanced_query_list):
+                try:
+                    logger.info(f"[{i+1}/{len(enhanced_query_list)}] 検索中: '{enhanced_query}'")
+                    results = self._search_with_political_filtering(
                         enhanced_query,
                         max_results * 2  # 多めに取得してフィルタリング
                     )
-                    future_to_query[future] = enhanced_query
-                
-                for future in as_completed(future_to_query):
-                    enhanced_query = future_to_query[future]
-                    try:
-                        results = future.result()
-                        all_results.extend(results)
-                    except Exception as e:
-                        logger.warning(f"拡張クエリ検索エラー ({enhanced_query}): {str(e)}")
+                    all_results.extend(results)
+                    
+                    # クエリ間の待機時間
+                    if i < len(enhanced_query_list) - 1:  # 最後でなければ待機
+                        time.sleep(1.5)
+                        
+                except Exception as e:
+                    logger.warning(f"拡張クエリ検索エラー ({enhanced_query}): {str(e)}")
             
             # 重複除去
             unique_results = self._remove_duplicates(all_results)

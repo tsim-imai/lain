@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# concurrent.futures を削除（シーケンシャル処理に変更）
 
 from ..utils.config import ConfigManager
 from ..utils.exceptions import ScraperError
@@ -220,24 +220,23 @@ class MediaScraper:
         """
         headlines = {}
         
-        # 並行処理で複数メディアから取得
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_media = {}
-            
-            for media_name in list(self.media_sites.keys())[:6]:  # 主要6メディア
-                future = executor.submit(
-                    self.scrape_media_politics, media_name, limit_per_media
-                )
-                future_to_media[future] = media_name
-            
-            for future in as_completed(future_to_media):
-                media_name = future_to_media[future]
-                try:
-                    media_articles = future.result()
-                    headlines[media_name] = media_articles
-                except Exception as e:
-                    logger.error(f"メディアヘッドライン取得エラー ({media_name}): {str(e)}")
-                    headlines[media_name] = []
+        # シーケンシャル処理で複数メディアから取得（bot認定回避）
+        media_list = list(self.media_sites.keys())[:6]  # 主要6メディア
+        logger.info(f"メディアヘッドライン順次取得開始: {len(media_list)}メディア")
+        
+        for i, media_name in enumerate(media_list):
+            try:
+                logger.info(f"[{i+1}/{len(media_list)}] {media_name}ヘッドライン取得中...")
+                media_articles = self.scrape_media_politics(media_name, limit_per_media)
+                headlines[media_name] = media_articles
+                
+                # メディア間の待機時間
+                if i < len(media_list) - 1:  # 最後でなければ待機
+                    time.sleep(2.0)
+                    
+            except Exception as e:
+                logger.error(f"メディアヘッドライン取得エラー ({media_name}): {str(e)}")
+                headlines[media_name] = []
         
         total_articles = sum(len(articles) for articles in headlines.values())
         logger.info(f"全メディア政治ヘッドライン取得完了: 総計{total_articles}件")
