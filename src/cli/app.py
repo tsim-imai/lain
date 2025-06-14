@@ -8,6 +8,7 @@ import time
 from ..llm.services import LLMService
 from ..scraper.services import ScraperService
 from ..cache.services import CacheService
+from ..cache.chat_manager import ChatHistoryManager
 from ..utils.config import ConfigManager
 from ..utils.exceptions import LainError
 from ..utils.colors import ColorPrinter, success, error, warning, info, highlight, progress_color
@@ -33,6 +34,7 @@ class LainApp:
         self.llm_service = LLMService(config_manager)
         self.scraper_service = ScraperService(config_manager)
         self.cache_service = CacheService(config_manager)
+        self.chat_manager = ChatHistoryManager(config_manager)
         
         logger.info("lainアプリケーションを初期化")
     
@@ -200,6 +202,9 @@ class LainApp:
             # 結果表示
             if result.get("search_performed"):
                 self.color_printer.print_info(f"検索実行: {len(result.get('search_results', []))}件の結果を取得")
+                # 使用した検索クエリを表示
+                if "search_query" in result:
+                    self.color_printer.print_info(f"使用クエリ: {result['search_query']}")
                 if result.get("from_cache"):
                     self.color_printer.print_info("キャッシュから取得")
             else:
@@ -308,6 +313,232 @@ class LainApp:
         """
         self.cache_service.optimize_cache()
     
+    def process_chat_query(
+        self,
+        query: str,
+        session_id: str,
+        force_refresh: bool = False,
+        max_results: int = 10,
+        show_progress: bool = True,
+        history_limit: int = 5
+    ) -> Dict[str, Any]:
+        """
+        チャットクエリを処理してAI応答を生成（履歴考慮）
+        
+        Args:
+            query: ユーザーの質問
+            session_id: チャットセッションID
+            force_refresh: キャッシュを無視して強制検索
+            max_results: 最大検索結果数
+            show_progress: 進捗バーを表示するか
+            history_limit: 考慮する履歴の最大数
+            
+        Returns:
+            処理結果辞書
+        """
+        start_time = time.time()
+        
+        try:
+            # チャット履歴を取得
+            history = self.chat_manager.format_history_for_llm(session_id, history_limit)
+            
+            # 進捗バーの初期化
+            if show_progress:
+                if self.color_printer.color_enabled:
+                    progress = tqdm(
+                        total=4, 
+                        desc="🔄 処理中", 
+                        unit="step",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
+                        colour='cyan',
+                        leave=False
+                    )
+                else:
+                    progress = tqdm(
+                        total=4, 
+                        desc="🔄 処理中", 
+                        unit="step",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
+                        leave=False
+                    )
+            
+            # ステップ1: 検索判断
+            if show_progress:
+                progress.set_description("🤔 検索の必要性を判断中")
+                progress.update(1)
+            
+            should_search = self.llm_service.should_search(query)
+            logger.info(f"検索判断: {'必要' if should_search else '不要'}")
+            
+            if not should_search:
+                # 履歴を考慮して直接回答
+                if show_progress:
+                    progress.set_description("🤖 AIが直接回答中")
+                    progress.update(3)
+                
+                response = self.llm_service.direct_answer(query, history)
+                
+                if show_progress:
+                    progress.close()
+                
+                # チャット履歴に保存
+                self.chat_manager.save_chat_entry(
+                    session_id, query, response, False
+                )
+                
+                return {
+                    "query": query,
+                    "session_id": session_id,
+                    "search_performed": False,
+                    "response": response,
+                    "processing_time": time.time() - start_time,
+                    "search_results": [],
+                    "history_used": bool(history)
+                }
+            
+            # ステップ2: 検索クエリ生成
+            if show_progress:
+                progress.set_description("📝 検索クエリを生成中")
+                progress.update(1)
+            
+            search_query = self.llm_service.generate_search_query(query)
+            logger.info(f"生成された検索クエリ: '{search_query}'")
+            
+            # ステップ3: Web検索（キャッシュ付き）
+            if show_progress:
+                progress.set_description("🌐 Web検索を実行中")
+                progress.update(1)
+            
+            search_results = self.cache_service.get_or_cache_results(
+                search_query,
+                lambda q: self.scraper_service.search(q, max_results),
+                force_refresh
+            )
+            
+            logger.info(f"検索結果: {len(search_results)}件取得")
+            
+            # ステップ4: 結果要約（履歴考慮）
+            if show_progress:
+                progress.set_description("📊 検索結果を要約中")
+                progress.update(1)
+            
+            if search_results:
+                response = self.llm_service.summarize_results(query, search_results, history)
+            else:
+                response = "申し訳ございませんが、関連する情報を見つけることができませんでした。"
+            
+            if show_progress:
+                progress.close()
+            
+            # チャット履歴に保存
+            self.chat_manager.save_chat_entry(
+                session_id, query, response, True, search_query
+            )
+            
+            return {
+                "query": query,
+                "session_id": session_id,
+                "search_query": search_query,
+                "search_performed": True,
+                "response": response,
+                "search_results": search_results,
+                "processing_time": time.time() - start_time,
+                "result_count": len(search_results),
+                "history_used": bool(history)
+            }
+            
+        except Exception as e:
+            if show_progress and 'progress' in locals():
+                progress.close()
+            
+            logger.error(f"チャットクエリ処理エラー: {str(e)}")
+            
+            # エラー時もLLMによる直接回答を試行
+            try:
+                response = self.llm_service.direct_answer(query, history)
+                
+                # エラー情報も含めて履歴に保存
+                error_response = f"検索中にエラーが発生しました。以下は直接回答です：\n\n{response}"
+                self.chat_manager.save_chat_entry(
+                    session_id, query, error_response, False
+                )
+                
+                return {
+                    "query": query,
+                    "session_id": session_id,
+                    "search_performed": False,
+                    "response": error_response,
+                    "error": str(e),
+                    "processing_time": time.time() - start_time,
+                    "search_results": [],
+                    "history_used": bool(history)
+                }
+            except Exception as fallback_error:
+                logger.error(f"フォールバック回答エラー: {str(fallback_error)}")
+                
+                error_response = "申し訳ございませんが、処理中にエラーが発生し、回答を生成できませんでした。"
+                self.chat_manager.save_chat_entry(
+                    session_id, query, error_response, False
+                )
+                
+                return {
+                    "query": query,
+                    "session_id": session_id,
+                    "search_performed": False,
+                    "response": error_response,
+                    "error": str(e),
+                    "fallback_error": str(fallback_error),
+                    "processing_time": time.time() - start_time,
+                    "search_results": [],
+                    "history_used": bool(history)
+                }
+    
+    def start_chat_session(self) -> str:
+        """
+        新しいチャットセッションを開始
+        
+        Returns:
+            セッションID
+        """
+        return self.chat_manager.create_session()
+    
+    def get_chat_history(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        チャット履歴を取得
+        
+        Args:
+            session_id: セッションID
+            limit: 取得件数
+            
+        Returns:
+            チャット履歴のリスト
+        """
+        return self.chat_manager.get_session_history(session_id, limit)
+    
+    def clear_chat_session(self, session_id: str) -> int:
+        """
+        チャットセッションをクリア
+        
+        Args:
+            session_id: セッションID
+            
+        Returns:
+            削除されたレコード数
+        """
+        return self.chat_manager.clear_session_history(session_id)
+    
+    def get_recent_chat_sessions(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        最近のチャットセッション一覧を取得
+        
+        Args:
+            limit: 取得件数
+            
+        Returns:
+            セッション情報のリスト
+        """
+        return self.chat_manager.get_recent_sessions(limit)
+    
     def get_system_info(self) -> Dict[str, Any]:
         """
         システム情報を取得
@@ -319,6 +550,7 @@ class LainApp:
             llm_config = self.config_manager.get_llm_config()
             scraper_config = self.config_manager.get_scraper_config()
             cache_stats = self.get_cache_statistics()
+            chat_stats = self.chat_manager.get_chat_statistics()
             
             return {
                 "llm": {
@@ -331,7 +563,8 @@ class LainApp:
                     "rate_limit": scraper_config["bing"]["rate_limit"]["requests_per_second"],
                     "connected": self.test_scraper_connection()
                 },
-                "cache": cache_stats
+                "cache": cache_stats,
+                "chat": chat_stats
             }
         except Exception as e:
             logger.error(f"システム情報取得エラー: {str(e)}")

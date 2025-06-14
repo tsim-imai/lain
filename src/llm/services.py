@@ -93,13 +93,14 @@ class LLMService:
             # エラー時は元のクエリをそのまま使用
             return query
     
-    def summarize_results(self, query: str, search_results: List[Dict[str, Any]]) -> str:
+    def summarize_results(self, query: str, search_results: List[Dict[str, Any]], history: str = "") -> str:
         """
         検索結果を要約して回答を生成
         
         Args:
             query: ユーザーの質問
             search_results: 検索結果のリスト
+            history: 過去の会話履歴（オプション）
             
         Returns:
             要約された回答
@@ -111,7 +112,22 @@ class LLMService:
             # 検索結果を文字列形式に変換
             formatted_results = self._format_search_results(search_results)
             
-            prompt = self.prompt_manager.get_result_summary_prompt(query, formatted_results)
+            # 履歴がある場合は考慮したプロンプトを使用
+            if history:
+                prompt = f"""過去の会話履歴を参考にして、以下の検索結果を基に質問に答えてください。
+
+過去の会話履歴:
+{history}
+
+現在の質問: {query}
+
+検索結果:
+{formatted_results}
+
+上記の検索結果を参考にして、質問に対する正確で有用な回答を作成してください。"""
+            else:
+                prompt = self.prompt_manager.get_result_summary_prompt(query, formatted_results)
+            
             summary = self.client.generate_response(prompt)
             
             logger.info(f"検索結果要約完了: {len(search_results)}件の結果を要約")
@@ -145,12 +161,13 @@ class LLMService:
         
         return "\n".join(formatted_parts)
     
-    def direct_answer(self, query: str) -> str:
+    def direct_answer(self, query: str, history: str = "") -> str:
         """
         検索を行わずに直接回答を生成
         
         Args:
             query: ユーザーの質問
+            history: 過去の会話履歴（オプション）
             
         Returns:
             LLMによる直接回答
@@ -159,8 +176,18 @@ class LLMService:
             LLMError: LLM処理エラー時
         """
         try:
-            # 直接回答用のプロンプト
-            prompt = f"以下の質問に答えてください。正確でない情報は避け、知らない場合は「わかりません」と答えてください。\n\n質問: {query}"
+            # 履歴がある場合は考慮した回答を生成
+            if history:
+                prompt = f"""過去の会話履歴を参考にして、以下の質問に答えてください。
+正確でない情報は避け、知らない場合は「わかりません」と答えてください。
+
+過去の会話履歴:
+{history}
+
+現在の質問: {query}"""
+            else:
+                # 直接回答用のプロンプト
+                prompt = f"以下の質問に答えてください。正確でない情報は避け、知らない場合は「わかりません」と答えてください。\n\n質問: {query}"
             
             response = self.client.generate_response(prompt)
             logger.info(f"直接回答生成: {query}")

@@ -222,6 +222,180 @@ def maintenance(ctx, clear_cache: bool, cleanup: bool, optimize: bool):
 
 
 @cli.command()
+@click.option('--session-id', type=str, help='既存のセッションIDを指定（新規作成する場合は省略）')
+@click.option('--no-cache', is_flag=True, help='キャッシュを使用せずに検索')
+@click.option('--max-results', type=int, default=10, help='最大検索結果数')
+@click.option('--history-limit', type=int, default=5, help='考慮する履歴の最大数')
+@click.pass_context
+def chat(ctx, session_id: Optional[str], no_cache: bool, max_results: int, history_limit: int):
+    """
+    インタラクティブなチャットモード
+    """
+    try:
+        config_manager = ctx.obj['config_manager']
+        enable_color = ctx.obj['enable_color']
+        color_printer = ctx.obj['color_printer']
+        
+        app = LainApp(config_manager, enable_color=enable_color)
+        
+        # セッション管理
+        if session_id:
+            current_session = session_id
+            color_printer.print_info(f"既存セッションを使用: {session_id[:8]}...")
+        else:
+            current_session = app.start_chat_session()
+            color_printer.print_success(f"新しいチャットセッション開始: {current_session[:8]}...")
+        
+        color_printer.print_header("lain チャットモード")
+        color_printer.print_info("'exit' または 'quit' で終了")
+        color_printer.print_info("'history' で履歴表示")
+        color_printer.print_info("'clear' でセッションクリア")
+        print()
+        
+        message_count = 0
+        
+        while True:
+            try:
+                # ユーザー入力を取得
+                if enable_color:
+                    user_input = input(f"{highlight('あなた:')} ")
+                else:
+                    user_input = input("あなた: ")
+                
+                # 特殊コマンドの処理
+                if user_input.lower() in ['exit', 'quit']:
+                    color_printer.print_info("チャットを終了します")
+                    break
+                elif user_input.lower() == 'history':
+                    history = app.get_chat_history(current_session, 10)
+                    if history:
+                        color_printer.print_header("チャット履歴")
+                        for i, entry in enumerate(history, 1):
+                            print(f"{i}. ユーザー: {entry['user_query']}")
+                            print(f"   AI: {entry['llm_response'][:100]}...")
+                            print()
+                    else:
+                        color_printer.print_info("履歴がありません")
+                    continue
+                elif user_input.lower() == 'clear':
+                    deleted_count = app.clear_chat_session(current_session)
+                    color_printer.print_success(f"セッション履歴を削除しました: {deleted_count}件")
+                    continue
+                elif not user_input.strip():
+                    continue
+                
+                # チャット処理
+                result = app.process_chat_query(
+                    query=user_input,
+                    session_id=current_session,
+                    force_refresh=no_cache,
+                    max_results=max_results,
+                    history_limit=history_limit
+                )
+                
+                message_count += 1
+                
+                # 結果表示
+                if result.get("search_performed"):
+                    color_printer.print_info(f"検索実行: {len(result.get('search_results', []))}件の結果を取得")
+                    if "search_query" in result:
+                        color_printer.print_info(f"使用クエリ: {result['search_query']}")
+                
+                if result.get("history_used"):
+                    color_printer.print_info("過去の会話履歴を考慮")
+                
+                # 処理時間表示
+                processing_time = result.get("processing_time", 0)
+                color_printer.print_info(f"処理時間: {processing_time:.2f}秒")
+                
+                # エラーがある場合
+                if "error" in result:
+                    color_printer.print_warning("処理中に問題が発生しました")
+                
+                # 回答表示
+                print()
+                if enable_color:
+                    print(f"{highlight('AI:')} {result['response']}")
+                else:
+                    print(f"AI: {result['response']}")
+                print()
+                
+            except KeyboardInterrupt:
+                color_printer.print_info("\nチャットを終了します")
+                break
+            except Exception as e:
+                color_printer.print_error(f"エラー: {str(e)}")
+                continue
+        
+        # セッション統計
+        if message_count > 0:
+            color_printer.print_info(f"総メッセージ数: {message_count}")
+            color_printer.print_info(f"セッションID: {current_session}")
+        
+    except Exception as e:
+        if ctx.obj['enable_color']:
+            click.echo(error(f"チャットエラー: {str(e)}"), err=True)
+        else:
+            click.echo(f"❌ チャットエラー: {str(e)}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option('--sessions', is_flag=True, help='最近のセッション一覧を表示')
+@click.option('--stats', is_flag=True, help='チャット統計を表示')
+@click.option('--clear-all', is_flag=True, help='全チャット履歴を削除')
+@click.pass_context
+def chat_history(ctx, sessions: bool, stats: bool, clear_all: bool):
+    """
+    チャット履歴管理
+    """
+    try:
+        config_manager = ctx.obj['config_manager']
+        enable_color = ctx.obj['enable_color']
+        color_printer = ctx.obj['color_printer']
+        
+        app = LainApp(config_manager, enable_color=enable_color)
+        
+        if sessions:
+            # 最近のセッション一覧を表示
+            recent_sessions = app.get_recent_chat_sessions(10)
+            if recent_sessions:
+                color_printer.print_header("最近のチャットセッション")
+                for session in recent_sessions:
+                    session_id_short = session['session_id'][:8]
+                    color_printer.print_result(
+                        f"セッション {session_id_short}",
+                        f"{session['message_count']}メッセージ ({session['last_message'][:19]})"
+                    )
+            else:
+                color_printer.print_info("チャットセッションがありません")
+        
+        if stats:
+            # チャット統計を表示
+            chat_stats = app.chat_manager.get_chat_statistics()
+            color_printer.print_header("チャット統計")
+            color_printer.print_result("総メッセージ数", str(chat_stats.get('total_messages', 0)))
+            color_printer.print_result("総セッション数", str(chat_stats.get('total_sessions', 0)))
+            color_printer.print_result("検索実行数", str(chat_stats.get('search_performed_count', 0)))
+            color_printer.print_result("平均メッセージ/セッション", f"{chat_stats.get('average_messages_per_session', 0):.1f}")
+        
+        if clear_all:
+            click.confirm('全チャット履歴を削除しますか？', abort=True)
+            deleted_count = app.chat_manager.clear_all_chat_history()
+            color_printer.print_success(f"全チャット履歴を削除しました: {deleted_count}件")
+        
+        if not any([sessions, stats, clear_all]):
+            color_printer.print_info("オプションを指定してください。--help を参照してください。")
+        
+    except Exception as e:
+        if ctx.obj['enable_color']:
+            click.echo(error(f"チャット履歴エラー: {str(e)}"), err=True)
+        else:
+            click.echo(f"❌ チャット履歴エラー: {str(e)}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
 @click.pass_context
 def config(ctx):
     """
