@@ -36,3 +36,13 @@ class NetworkError(LainError):
 class ValidationError(LainError):
     """データ検証関連のエラー"""
     pass
+
+
+class AnalysisError(LainError):
+    """分析処理関連のエラー"""
+    pass
+
+
+class PoliticalDataError(LainError):
+    """政治データ関連のエラー"""
+    pass
