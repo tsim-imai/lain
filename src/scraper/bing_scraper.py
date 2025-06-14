@@ -129,6 +129,8 @@ class BingScraper:
         
         headers = self.bing_config["headers"].copy()
         headers["User-Agent"] = user_agent
+        # gzip圧縮を無効化してプレーンテキストを取得
+        headers["Accept-Encoding"] = "identity"
         
         logger.debug(f"User-Agent設定: {user_agent}")
         return headers
