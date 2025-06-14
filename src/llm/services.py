@@ -2,7 +2,7 @@
 LLMサービス層 - 各種AI機能の実装
 """
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterator, Callable
 from .client import LLMClient
 from .prompts import PromptManager
 from ..utils.config import ConfigManager
@@ -197,6 +197,146 @@ class LLMService:
             logger.error(f"直接回答エラー: {str(e)}")
             raise LLMError(f"回答の生成に失敗しました: {str(e)}")
     
+    def direct_answer_stream(
+        self,
+        query: str,
+        history: str = "",
+        callback: Optional[Callable[[str], None]] = None
+    ) -> Iterator[str]:
+        """
+        検索を行わずにストリーミング直接回答を生成
+        
+        Args:
+            query: ユーザーの質問
+            history: 過去の会話履歴（オプション）
+            callback: チャンクごとのコールバック関数
+            
+        Yields:
+            LLMによる応答テキストチャンク
+            
+        Raises:
+            LLMError: LLM処理エラー時
+        """
+        try:
+            # 履歴がある場合は考慮した回答を生成
+            if history:
+                prompt = f"""過去の会話履歴を参考にして、以下の質問に答えてください。
+正確でない情報は避け、知らない場合は「わかりません」と答えてください。
+
+過去の会話履歴:
+{history}
+
+現在の質問: {query}"""
+            else:
+                # 直接回答用のプロンプト
+                prompt = f"以下の質問に答えてください。正確でない情報は避け、知らない場合は「わかりません」と答えてください。\n\n質問: {query}"
+            
+            for chunk in self.client.generate_response_stream(prompt, callback=callback):
+                yield chunk
+            
+            logger.info(f"ストリーミング直接回答生成: {query}")
+            
+        except Exception as e:
+            logger.error(f"ストリーミング直接回答エラー: {str(e)}")
+            raise LLMError(f"ストリーミング回答の生成に失敗しました: {str(e)}")
+    
+    def summarize_results_stream(
+        self,
+        query: str,
+        search_results: List[Dict[str, Any]],
+        history: str = "",
+        callback: Optional[Callable[[str], None]] = None
+    ) -> Iterator[str]:
+        """
+        検索結果をストリーミングで要約して回答を生成
+        
+        Args:
+            query: ユーザーの質問
+            search_results: 検索結果のリスト
+            history: 過去の会話履歴（オプション）
+            callback: チャンクごとのコールバック関数
+            
+        Yields:
+            要約された回答テキストチャンク
+            
+        Raises:
+            LLMError: LLM処理エラー時
+        """
+        try:
+            # 検索結果を文字列形式に変換
+            formatted_results = self._format_search_results(search_results)
+            
+            # 履歴がある場合は考慮したプロンプトを使用
+            if history:
+                prompt = f"""過去の会話履歴を参考にして、以下の検索結果を基に質問に答えてください。
+
+過去の会話履歴:
+{history}
+
+現在の質問: {query}
+
+検索結果:
+{formatted_results}
+
+上記の検索結果を参考にして、質問に対する正確で有用な回答を作成してください。"""
+            else:
+                prompt = self.prompt_manager.get_result_summary_prompt(query, formatted_results)
+            
+            for chunk in self.client.generate_response_stream(prompt, callback=callback):
+                yield chunk
+            
+            logger.info(f"ストリーミング検索結果要約完了: {len(search_results)}件の結果を要約")
+            
+        except Exception as e:
+            logger.error(f"ストリーミング検索結果要約エラー: {str(e)}")
+            raise LLMError(f"ストリーミング検索結果の要約に失敗しました: {str(e)}")
+    
+    def direct_answer_stream_complete(
+        self,
+        query: str,
+        history: str = "",
+        callback: Optional[Callable[[str], None]] = None
+    ) -> str:
+        """
+        ストリーミング直接回答を完全に受信して文字列として返す
+        
+        Args:
+            query: ユーザーの質問
+            history: 過去の会話履歴（オプション）
+            callback: チャンクごとのコールバック関数
+            
+        Returns:
+            完全なLLM応答テキスト
+        """
+        complete_response = ""
+        for chunk in self.direct_answer_stream(query, history, callback):
+            complete_response += chunk
+        return complete_response.strip()
+    
+    def summarize_results_stream_complete(
+        self,
+        query: str,
+        search_results: List[Dict[str, Any]],
+        history: str = "",
+        callback: Optional[Callable[[str], None]] = None
+    ) -> str:
+        """
+        ストリーミング検索結果要約を完全に受信して文字列として返す
+        
+        Args:
+            query: ユーザーの質問
+            search_results: 検索結果のリスト
+            history: 過去の会話履歴（オプション）
+            callback: チャンクごとのコールバック関数
+            
+        Returns:
+            完全な要約応答テキスト
+        """
+        complete_response = ""
+        for chunk in self.summarize_results_stream(query, search_results, history, callback):
+            complete_response += chunk
+        return complete_response.strip()
+
     def test_connection(self) -> bool:
         """
         LLMサービス接続テスト

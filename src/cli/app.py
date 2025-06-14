@@ -2,7 +2,8 @@
 メインアプリケーション
 """
 import logging
-from typing import Dict, Any, List, Optional
+import sys
+from typing import Dict, Any, List, Optional, Callable
 from tqdm import tqdm
 import time
 from ..llm.services import LLMService
@@ -226,6 +227,142 @@ class LainApp:
             return result["response"]
             
         except Exception as e:
+            self.color_printer.print_error(f"検索エラー: {str(e)}")
+            return f"エラーが発生しました: {str(e)}"
+    
+    def search_stream(self, query: str, show_progress: bool = True, **kwargs) -> str:
+        """
+        ストリーミング対応の検索実行
+        
+        Args:
+            query: 検索クエリ
+            show_progress: プログレス表示
+            **kwargs: process_queryへの追加引数
+            
+        Returns:
+            検索結果テキスト
+        """
+        try:
+            # ヘッダー表示
+            self.color_printer.print_header(f"lain検索: {query}")
+            
+            start_time = time.time()
+            
+            # 進捗バーの初期化
+            if show_progress:
+                if self.color_printer.color_enabled:
+                    progress = tqdm(
+                        total=4, 
+                        desc="🔄 処理中", 
+                        unit="step",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
+                        colour='cyan',
+                        leave=False
+                    )
+                else:
+                    progress = tqdm(
+                        total=4, 
+                        desc="🔄 処理中", 
+                        unit="step",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
+                        leave=False
+                    )
+            
+            # ステップ1: 検索判断
+            if show_progress:
+                progress.set_description("🤔 検索の必要性を判断中")
+                progress.update(1)
+            
+            should_search = self.llm_service.should_search(query)
+            logger.info(f"検索判断: {'必要' if should_search else '不要'}")
+            
+            if not should_search:
+                # 直接回答をストリーミング表示
+                if show_progress:
+                    progress.set_description("🤖 AIが直接回答中")
+                    progress.update(3)
+                    progress.close()
+                
+                # 回答表示開始
+                print()
+                print(highlight("🤖 AI回答:"), end=" ", flush=True)
+                
+                # ストリーミング回答の収集
+                complete_response = ""
+                for chunk in self.llm_service.direct_answer_stream(query):
+                    print(chunk, end="", flush=True)
+                    complete_response += chunk
+                
+                print()  # 改行
+                
+                # 処理時間表示
+                processing_time = time.time() - start_time
+                self.color_printer.print_info(f"処理時間: {processing_time:.2f}秒")
+                self.color_printer.print_info("検索をスキップして直接回答")
+                
+                return complete_response.strip()
+            
+            # ステップ2: 検索クエリ生成
+            if show_progress:
+                progress.set_description("📝 検索クエリを生成中")
+                progress.update(1)
+            
+            search_query = self.llm_service.generate_search_query(query)
+            logger.info(f"生成された検索クエリ: '{search_query}'")
+            
+            # ステップ3: Web検索（キャッシュ付き）
+            if show_progress:
+                progress.set_description("🌐 Web検索を実行中")
+                progress.update(1)
+            
+            search_results = self.cache_service.get_or_cache_results(
+                search_query,
+                lambda q: self.scraper_service.search(q, kwargs.get('max_results', 10)),
+                kwargs.get('force_refresh', False)
+            )
+            
+            logger.info(f"検索結果: {len(search_results)}件取得")
+            
+            # ステップ4: 結果要約をストリーミング表示
+            if show_progress:
+                progress.set_description("📊 検索結果を要約中")
+                progress.update(1)
+                progress.close()
+            
+            if search_results:
+                # 回答表示開始
+                print()
+                print(highlight("🤖 AI回答:"), end=" ", flush=True)
+                
+                # ストリーミング要約の収集
+                complete_response = ""
+                for chunk in self.llm_service.summarize_results_stream(query, search_results):
+                    print(chunk, end="", flush=True)
+                    complete_response += chunk
+                
+                print()  # 改行
+                response = complete_response.strip()
+            else:
+                response = "申し訳ございませんが、関連する情報を見つけることができませんでした。"
+                print()
+                print(highlight("🤖 AI回答:"))
+                print(response)
+            
+            # 結果表示
+            self.color_printer.print_info(f"検索実行: {len(search_results)}件の結果を取得")
+            if search_query:
+                self.color_printer.print_info(f"使用クエリ: {search_query}")
+            
+            # 処理時間表示
+            processing_time = time.time() - start_time
+            self.color_printer.print_info(f"処理時間: {processing_time:.2f}秒")
+            
+            return response
+            
+        except Exception as e:
+            if show_progress and 'progress' in locals():
+                progress.close()
+            
             self.color_printer.print_error(f"検索エラー: {str(e)}")
             return f"エラーが発生しました: {str(e)}"
     
@@ -538,6 +675,207 @@ class LainApp:
             セッション情報のリスト
         """
         return self.chat_manager.get_recent_sessions(limit)
+    
+    def process_chat_query_stream(
+        self,
+        query: str,
+        session_id: str,
+        force_refresh: bool = False,
+        max_results: int = 10,
+        show_progress: bool = True,
+        history_limit: int = 5,
+        stream_callback: Optional[Callable[[str], None]] = None
+    ) -> Dict[str, Any]:
+        """
+        チャットクエリをストリーミング処理してAI応答を生成（履歴考慮）
+        
+        Args:
+            query: ユーザーの質問
+            session_id: チャットセッションID
+            force_refresh: キャッシュを無視して強制検索
+            max_results: 最大検索結果数
+            show_progress: 進捗バーを表示するか
+            history_limit: 考慮する履歴の最大数
+            stream_callback: ストリーミング出力のコールバック関数
+            
+        Returns:
+            処理結果辞書
+        """
+        start_time = time.time()
+        
+        try:
+            # チャット履歴を取得
+            history = self.chat_manager.format_history_for_llm(session_id, history_limit)
+            
+            # 進捗バーの初期化
+            if show_progress:
+                if self.color_printer.color_enabled:
+                    progress = tqdm(
+                        total=4, 
+                        desc="🔄 処理中", 
+                        unit="step",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
+                        colour='cyan',
+                        leave=False
+                    )
+                else:
+                    progress = tqdm(
+                        total=4, 
+                        desc="🔄 処理中", 
+                        unit="step",
+                        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}',
+                        leave=False
+                    )
+            
+            # ステップ1: 検索判断
+            if show_progress:
+                progress.set_description("🤔 検索の必要性を判断中")
+                progress.update(1)
+            
+            should_search = self.llm_service.should_search(query)
+            logger.info(f"検索判断: {'必要' if should_search else '不要'}")
+            
+            if not should_search:
+                # 履歴を考慮してストリーミング直接回答
+                if show_progress:
+                    progress.set_description("🤖 AIが直接回答中")
+                    progress.update(3)
+                    progress.close()
+                
+                # ストリーミング応答を収集
+                complete_response = ""
+                for chunk in self.llm_service.direct_answer_stream(query, history, stream_callback):
+                    complete_response += chunk
+                
+                response = complete_response.strip()
+                
+                # チャット履歴に保存
+                self.chat_manager.save_chat_entry(
+                    session_id, query, response, False
+                )
+                
+                return {
+                    "query": query,
+                    "session_id": session_id,
+                    "search_performed": False,
+                    "response": response,
+                    "processing_time": time.time() - start_time,
+                    "search_results": [],
+                    "history_used": bool(history),
+                    "streamed": True
+                }
+            
+            # ステップ2: 検索クエリ生成
+            if show_progress:
+                progress.set_description("📝 検索クエリを生成中")
+                progress.update(1)
+            
+            search_query = self.llm_service.generate_search_query(query)
+            logger.info(f"生成された検索クエリ: '{search_query}'")
+            
+            # ステップ3: Web検索（キャッシュ付き）
+            if show_progress:
+                progress.set_description("🌐 Web検索を実行中")
+                progress.update(1)
+            
+            search_results = self.cache_service.get_or_cache_results(
+                search_query,
+                lambda q: self.scraper_service.search(q, max_results),
+                force_refresh
+            )
+            
+            logger.info(f"検索結果: {len(search_results)}件取得")
+            
+            # ステップ4: 結果要約（履歴考慮、ストリーミング）
+            if show_progress:
+                progress.set_description("📊 検索結果を要約中")
+                progress.update(1)
+                progress.close()
+            
+            if search_results:
+                # ストリーミング要約を収集
+                complete_response = ""
+                for chunk in self.llm_service.summarize_results_stream(
+                    query, search_results, history, stream_callback
+                ):
+                    complete_response += chunk
+                response = complete_response.strip()
+            else:
+                response = "申し訳ございませんが、関連する情報を見つけることができませんでした。"
+                if stream_callback:
+                    stream_callback(response)
+            
+            # チャット履歴に保存
+            self.chat_manager.save_chat_entry(
+                session_id, query, response, True, search_query
+            )
+            
+            return {
+                "query": query,
+                "session_id": session_id,
+                "search_query": search_query,
+                "search_performed": True,
+                "response": response,
+                "search_results": search_results,
+                "processing_time": time.time() - start_time,
+                "result_count": len(search_results),
+                "history_used": bool(history),
+                "streamed": True
+            }
+            
+        except Exception as e:
+            if show_progress and 'progress' in locals():
+                progress.close()
+            
+            logger.error(f"チャットクエリストリーミング処理エラー: {str(e)}")
+            
+            # エラー時もLLMによる直接回答を試行
+            try:
+                complete_response = ""
+                for chunk in self.llm_service.direct_answer_stream(query, history, stream_callback):
+                    complete_response += chunk
+                response = complete_response.strip()
+                
+                # エラー情報も含めて履歴に保存
+                error_response = f"検索中にエラーが発生しました。以下は直接回答です：\n\n{response}"
+                self.chat_manager.save_chat_entry(
+                    session_id, query, error_response, False
+                )
+                
+                return {
+                    "query": query,
+                    "session_id": session_id,
+                    "search_performed": False,
+                    "response": error_response,
+                    "error": str(e),
+                    "processing_time": time.time() - start_time,
+                    "search_results": [],
+                    "history_used": bool(history),
+                    "streamed": True
+                }
+            except Exception as fallback_error:
+                logger.error(f"フォールバック回答エラー: {str(fallback_error)}")
+                
+                error_response = "申し訳ございませんが、処理中にエラーが発生し、回答を生成できませんでした。"
+                if stream_callback:
+                    stream_callback(error_response)
+                    
+                self.chat_manager.save_chat_entry(
+                    session_id, query, error_response, False
+                )
+                
+                return {
+                    "query": query,
+                    "session_id": session_id,
+                    "search_performed": False,
+                    "response": error_response,
+                    "error": str(e),
+                    "fallback_error": str(fallback_error),
+                    "processing_time": time.time() - start_time,
+                    "search_results": [],
+                    "history_used": bool(history),
+                    "streamed": True
+                }
     
     def get_system_info(self) -> Dict[str, Any]:
         """

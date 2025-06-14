@@ -66,8 +66,9 @@ def cli(ctx, config_dir: Optional[str], verbose: bool, debug: bool, no_color: bo
 @click.option('--no-cache', is_flag=True, help='キャッシュを使用せずに検索')
 @click.option('--max-results', type=int, default=10, help='最大検索結果数')
 @click.option('--output-format', type=click.Choice(['text', 'json']), default='text', help='出力形式')
+@click.option('--stream', is_flag=True, help='ストリーミング表示を有効化')
 @click.pass_context
-def search(ctx, query: str, no_cache: bool, max_results: int, output_format: str):
+def search(ctx, query: str, no_cache: bool, max_results: int, output_format: str, stream: bool):
     """
     検索クエリを実行
     
@@ -90,12 +91,20 @@ def search(ctx, query: str, no_cache: bool, max_results: int, output_format: str
             import json
             click.echo(json.dumps(result, ensure_ascii=False, indent=2))
         else:
-            # カラー出力対応の検索実行
-            app.search(
-                query=query,
-                force_refresh=no_cache,
-                max_results=max_results
-            )
+            # ストリーミング検索実行
+            if stream:
+                app.search_stream(
+                    query=query,
+                    force_refresh=no_cache,
+                    max_results=max_results
+                )
+            else:
+                # カラー出力対応の検索実行
+                app.search(
+                    query=query,
+                    force_refresh=no_cache,
+                    max_results=max_results
+                )
             
     except Exception as e:
         if ctx.obj['enable_color']:
@@ -226,8 +235,9 @@ def maintenance(ctx, clear_cache: bool, cleanup: bool, optimize: bool):
 @click.option('--no-cache', is_flag=True, help='キャッシュを使用せずに検索')
 @click.option('--max-results', type=int, default=10, help='最大検索結果数')
 @click.option('--history-limit', type=int, default=5, help='考慮する履歴の最大数')
+@click.option('--no-stream', is_flag=True, help='ストリーミング表示を無効化')
 @click.pass_context
-def chat(ctx, session_id: Optional[str], no_cache: bool, max_results: int, history_limit: int):
+def chat(ctx, session_id: Optional[str], no_cache: bool, max_results: int, history_limit: int, no_stream: bool):
     """
     インタラクティブなチャットモード
     """
@@ -285,15 +295,41 @@ def chat(ctx, session_id: Optional[str], no_cache: bool, max_results: int, histo
                     continue
                 
                 # チャット処理
-                result = app.process_chat_query(
-                    query=user_input,
-                    session_id=current_session,
-                    force_refresh=no_cache,
-                    max_results=max_results,
-                    history_limit=history_limit
-                )
+                if no_stream:
+                    # 従来の非ストリーミング処理
+                    result = app.process_chat_query(
+                        query=user_input,
+                        session_id=current_session,
+                        force_refresh=no_cache,
+                        max_results=max_results,
+                        history_limit=history_limit
+                    )
+                else:
+                    # ストリーミング処理
+                    print()  # 回答開始前の空行
+                    if enable_color:
+                        print(f"{highlight('AI:')} ", end="", flush=True)
+                    else:
+                        print("AI: ", end="", flush=True)
+                    
+                    # ストリーミングコールバック関数
+                    def stream_callback(chunk: str):
+                        print(chunk, end="", flush=True)
+                    
+                    result = app.process_chat_query_stream(
+                        query=user_input,
+                        session_id=current_session,
+                        force_refresh=no_cache,
+                        max_results=max_results,
+                        history_limit=history_limit,
+                        stream_callback=stream_callback
+                    )
                 
                 message_count += 1
+                
+                # ストリーミング後の追加情報表示
+                if result.get("streamed"):
+                    print()  # ストリーミング終了後の空行
                 
                 # 結果表示
                 if result.get("search_performed"):
@@ -312,12 +348,14 @@ def chat(ctx, session_id: Optional[str], no_cache: bool, max_results: int, histo
                 if "error" in result:
                     color_printer.print_warning("処理中に問題が発生しました")
                 
-                # 回答表示
-                print()
-                if enable_color:
-                    print(f"{highlight('AI:')} {result['response']}")
-                else:
-                    print(f"AI: {result['response']}")
+                # 非ストリーミングの場合のみ回答表示
+                if not result.get("streamed"):
+                    print()
+                    if enable_color:
+                        print(f"{highlight('AI:')} {result['response']}")
+                    else:
+                        print(f"AI: {result['response']}")
+                
                 print()
                 
             except KeyboardInterrupt:
