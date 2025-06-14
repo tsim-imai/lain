@@ -179,8 +179,21 @@ class ConfigManager:
                 return False
             
             scraper_config = self.get_scraper_config()
-            if "bing" not in scraper_config:
-                logger.error("Bing設定が不完全です")
+            if "search_engines" not in scraper_config:
+                logger.error("検索エンジン設定が不完全です")
+                return False
+            
+            # 主要検索エンジンとフォールバックエンジンの設定をチェック
+            search_engines = scraper_config["search_engines"]
+            primary_engine = search_engines.get("primary")
+            fallback_engine = search_engines.get("fallback")
+            
+            if not primary_engine or primary_engine not in scraper_config:
+                logger.error(f"主要検索エンジン設定が不完全です: {primary_engine}")
+                return False
+                
+            if not fallback_engine or fallback_engine not in scraper_config:
+                logger.error(f"フォールバック検索エンジン設定が不完全です: {fallback_engine}")
                 return False
             
             logger.info("全設定ファイルの妥当性チェック完了")
