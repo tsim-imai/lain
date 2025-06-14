@@ -14,6 +14,7 @@ import re
 
 from ..utils.config import ConfigManager
 from ..utils.exceptions import ScraperError
+from ..political_data.political_database import PoliticalDatabaseManager, PoliticalNews
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class MediaScraper:
         """
         self.config_manager = config_manager
         self.session = requests.Session()
+        self.database = PoliticalDatabaseManager(config_manager)
         
         # ユーザーエージェント設定
         self.session.headers.update({
@@ -195,6 +197,9 @@ class MediaScraper:
                     article = self._parse_article(element, politics_url, media_name, media_info)
                     if article:
                         articles.append(article)
+                        
+                        # データベースに保存
+                        self._save_article_to_db(article, media_info)
                         
                 except Exception as e:
                     logger.warning(f"記事解析エラー ({media_name}): {str(e)}")
@@ -559,6 +564,191 @@ class MediaScraper:
         except Exception as e:
             logger.error(f"メディア報道分析エラー: {str(e)}")
             return {}
+    
+    def _save_article_to_db(self, article: Dict[str, Any], media_info: Dict[str, Any]) -> Optional[int]:
+        """
+        記事をデータベースに保存
+        
+        Args:
+            article: 記事データ
+            media_info: メディア情報
+            
+        Returns:
+            保存された記事のID（重複の場合はNone）
+        """
+        try:
+            # 政治関連キーワード抽出
+            keywords = self._extract_keywords(article.get("title", "") + " " + article.get("summary", ""))
+            
+            # エンティティ抽出（簡易版）
+            entities = self._extract_entities(article.get("title", "") + " " + article.get("summary", ""))
+            
+            # トピック分類（簡易版）
+            topic_category = self._classify_topic(article.get("title", "") + " " + article.get("summary", ""))
+            
+            news = PoliticalNews(
+                id=None,
+                title=article["title"],
+                content=article.get("summary", ""),
+                summary=article.get("summary", ""),
+                url=article.get("link", ""),
+                source_name=article["source"],
+                published_at=article.get("date", ""),
+                collected_at=datetime.now().isoformat(),
+                reliability_score=article["reliability_score"],
+                political_bias=article["political_bias"],
+                topic_category=topic_category,
+                sentiment_score=0.0,  # 後で感情分析で更新
+                entity_mentions=entities,
+                keywords=keywords
+            )
+            
+            saved_id = self.database.save_political_news(news)
+            if saved_id:
+                logger.debug(f"記事をDB保存: {article['title'][:30]}... (ID: {saved_id})")
+            
+            return saved_id
+            
+        except Exception as e:
+            logger.error(f"記事DB保存エラー: {str(e)}")
+            return None
+    
+    def _extract_keywords(self, text: str) -> List[str]:
+        """政治関連キーワードを抽出"""
+        political_keywords = [
+            "政治", "政府", "内閣", "総理", "首相", "大臣", "議員", "国会", "選挙", "政党",
+            "自民党", "立憲民主党", "日本維新の会", "公明党", "日本共産党",
+            "岸田", "泉", "志位", "馬場", "玉木", "山本", "福島",
+            "政策", "法案", "予算", "税制", "憲法", "安全保障", "外交", "経済政策",
+            "支持率", "世論調査", "選挙結果", "投票", "有権者"
+        ]
+        
+        found_keywords = []
+        text_lower = text.lower()
+        
+        for keyword in political_keywords:
+            if keyword in text:
+                found_keywords.append(keyword)
+        
+        return list(set(found_keywords))  # 重複除去
+    
+    def _extract_entities(self, text: str) -> Dict[str, Any]:
+        """政治エンティティを抽出"""
+        entities = {
+            "politicians": [],
+            "parties": [],
+            "policies": [],
+            "organizations": []
+        }
+        
+        # 政治家名
+        politicians = ["岸田文雄", "泉健太", "志位和夫", "馬場伸幸", "玉木雄一郎", "山本太郎", "福島みずほ"]
+        for politician in politicians:
+            if politician in text:
+                entities["politicians"].append(politician)
+        
+        # 政党名
+        parties = ["自由民主党", "立憲民主党", "日本維新の会", "公明党", "日本共産党", "国民民主党", "れいわ新選組", "社会民主党"]
+        for party in parties:
+            if party in text or party.replace("党", "") in text:
+                entities["parties"].append(party)
+        
+        # 政府機関
+        organizations = ["内閣", "総理官邸", "国会", "衆議院", "参議院", "財務省", "外務省", "防衛省"]
+        for org in organizations:
+            if org in text:
+                entities["organizations"].append(org)
+        
+        return entities
+    
+    def _classify_topic(self, text: str) -> str:
+        """記事のトピック分類"""
+        topic_keywords = {
+            "内閣支持率": ["支持率", "世論調査", "内閣支持"],
+            "経済政策": ["経済", "景気", "GDP", "インフレ", "税制", "予算"],
+            "外交・安保": ["外交", "安全保障", "防衛", "日米", "中国", "韓国", "安保"],
+            "社会保障": ["年金", "医療", "介護", "福祉", "子育て", "少子化"],
+            "憲法・法制": ["憲法", "改正", "法案", "立法", "法律"],
+            "選挙": ["選挙", "投票", "候補者", "政党", "当選", "落選"],
+            "国会": ["国会", "審議", "質疑", "委員会", "本会議"],
+            "政治スキャンダル": ["疑惑", "説明責任", "追及", "辞任", "スキャンダル"]
+        }
+        
+        for topic, keywords in topic_keywords.items():
+            if any(keyword in text for keyword in keywords):
+                return topic
+        
+        return "その他"
+    
+    def get_cached_articles(self, query: str, hours: int = 24) -> List[Dict[str, Any]]:
+        """
+        キャッシュされた記事を取得
+        
+        Args:
+            query: 検索クエリ
+            hours: 取得対象時間（時間）
+            
+        Returns:
+            キャッシュされた記事のリスト
+        """
+        try:
+            # データベースから検索
+            cached_news = self.database.search_political_news(
+                keyword=query,
+                days_back=hours // 24 + 1,  # 時間を日数に換算
+                limit=50
+            )
+            
+            # 記事形式に変換
+            articles = []
+            for news in cached_news:
+                article = {
+                    "source": news.source_name,
+                    "title": news.title,
+                    "link": news.url or "",
+                    "date": news.published_at or "",
+                    "summary": news.summary or "",
+                    "category": news.topic_category or "政治ニュース",
+                    "reliability_score": news.reliability_score,
+                    "political_bias": news.political_bias,
+                    "scraped_at": news.collected_at,
+                    "keywords": news.keywords,
+                    "cached": True
+                }
+                articles.append(article)
+            
+            logger.info(f"キャッシュから記事を取得: {len(articles)}件")
+            return articles
+            
+        except Exception as e:
+            logger.error(f"キャッシュ記事取得エラー: {str(e)}")
+            return []
+    
+    def should_scrape_fresh(self, query: str, hours: int = 24) -> bool:
+        """
+        新しいスクレイピングが必要かチェック
+        
+        Args:
+            query: 検索クエリ
+            hours: キャッシュ有効期間
+            
+        Returns:
+            新しいスクレイピングが必要な場合True
+        """
+        try:
+            cache_status = self.database.get_cache_status(query, hours)
+            
+            # キャッシュが新しい場合はスクレイピング不要
+            if cache_status.get("has_fresh_data", False):
+                logger.info(f"キャッシュ利用: {query} ({cache_status['news_count']}件)")
+                return False
+            
+            logger.info(f"新規スクレイピング実行: {query}")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"キャッシュ状況確認エラー: {str(e)}")
+            return True  # エラー時は安全のためスクレイピング実行
     
     def test_connection(self) -> bool:
         """メディアサイト接続テスト"""
